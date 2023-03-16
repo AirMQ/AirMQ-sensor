@@ -1,0 +1,217 @@
+// rules1.txt ver. 1.0.9 20221017
+//Allmode version
+
+On System#Boot do
+	gpio,12,1
+	gpio,15,0
+	let,51,{ord:{substring:10:11:%sysbuild_git%}}	//Select which VCC to use based on FW version
+	if %v51% = 86
+		let,52,%vcc%
+	elseif %v51% = 45
+		let,52,[ADC#VCC]
+	endif
+	let,50,{ord:{substring:5:6:%sysname%}}		//Check if name contains underscore
+	if %v50% = 95
+		let,50,{substring:6:18:%sysname%}
+		if %v50% != %mac_int%
+			name,AirMQ_%mac_int%
+			save
+		endif
+	else
+		name,AirMQ_%mac_int%
+		save
+	endif
+	if [Dummy#mode]=4 or [Dummy#mode]=5		//Check the mode waking from and set guard timer if necessary
+		gpio,15,0
+		timerset,1,60						//Set timer to explicitly enter sleep mode if wifi/MQTT connection is unavailable
+		let,2,[Dummy#cycle]-60					//Initialize %v2% to previous cycle duration
+	else 
+		gpio,15,1						//Other modes require 5V bus on
+	endif
+	asyncevent,blueLED
+	
+endon
+
+on wifi#connected do
+	asyncevent,greenLED
+endon
+
+On WiFi#Disconnected do
+	asyncevent,blueLED
+endon
+
+on mqtt#connected do
+  If %v53% = 0
+    Let,53,1
+    AsyncEvent,sendSysinfo
+  endif  
+	if %unit%=0
+		asyncevent,postcheck
+		asyncevent,cyanLED
+	else
+	asyncevent,yellowLED
+	endif
+endon
+
+On mqtt#Disconnected do
+	if %iswifi% = 0 
+		asyncevent,blueLED
+	else
+		asyncevent,greenLED
+	endif 
+endon
+
+on setctl do						//Process incoming setctl command
+	taskvalueset,Dummy,mode,%eventvalue1%				//Store mode in RTC
+	taskvalueset,Dummy,cycle,%eventvalue2%				//Store cycle duration in RTC
+	taskvalueset,Dummy,on,%eventvalue3%				//Store on duration in RTC
+	let,1,%eventvalue1%						//Set mode
+	let,2,%eventvalue2%						//Set cycle duration
+	let,3,%eventvalue3%						//Set PMS On time
+	let,4,%eventvalue4%						//Set Narodmon timer
+
+	if %eventvalue1%=0				//Maintenance mode. Sensors are disabled
+		publish Sysctl/%mac_int%/Status,"Maintenance mode"
+		gpio,12,1						//Disable PMS
+		gpio,15,0						//Disable 5V as well
+		timerset,1,0
+	endif
+//	if %eventvalue1%=1				//Burn-in test mode
+//		publish Sysctl/%mac_int%/Status,"Burn-in test mode"
+//		looptimerset,6,60					//Start 60-seconds counter cycle
+//		looptimerset,11,%v2%					//Set main timer loop
+//		asyncevent,start123
+//	endif
+	if %eventvalue1%=1 or %eventvalue1%=2 or %eventvalue1%=3	//Normal/LaserSave mode
+		publish Sysctl/%mac_int%/Status,"Normal AC mode"
+		looptimerset,6,60					//Start 60 seconds counter cycle
+		looptimerset,11,%v2%                			//Set main timer loop
+		let,5,%eventvalue2%-6					//Set sensor read time (runsens)
+		let,6,%eventvalue2%-2					//Set mqtt publish time (sendAQ)
+		asyncevent, start123
+	endif
+	if %eventvalue1%=3				//Normal/Narodmon mode, set timer #4 only
+		publish Sysctl/%mac_int%/Status,"Narodmon mode"
+		looptimerset,4,%v4%					//Set NarodMon timer loop 
+	endif
+	if %eventvalue1%=4				//Normal Sleep mode
+		publish Sysctl/%mac_int%/Status,"Normal Sleep mode, %v2% seconds"
+		let,5,%eventvalue3%+2					//Set Measurement time
+		let,6,%eventvalue3%+5					//Set MQTT Publish time
+//		let,2,%eventvalue2%					//Set deep sleep duration, use if correction is needed
+		asyncevent, start4
+	endif
+	if %eventvalue1%=5				//PowerSave Sleep mode
+		publish Sysctl/%mac_int%/Status,"PowerSave Sleep mode, %v2% seconds"
+		let,5,2							//Set sensor read time (runsens)
+		let,6,6							//Set mqtt publish time (sendAQ)
+//		let,2,%eventvalue2%					//Set deep sleep duration, use if correction is needed
+		asyncevent, start5
+	endif
+endon
+
+on rules#timer=11 do
+        asyncevent, start123						//Restart sensing
+endon
+
+on start123 do						//Start measurements
+	longpulse,12,0,%v3%						//start PM measurement for v3 seconds 
+	timerset,12,%v5%						//Run sensor reads at v5 seconds
+	timerset,13,%v6%						//Publish results as v6 seconds
+endon
+
+on rules#timer=12 do							//Run sensor reads
+	asyncevent,runSense
+endon
+
+on rules#timer=6 do							//Run Counter reads
+	asyncevent,runCount
+endon
+
+on rules#timer=13 do					//Jump to sendAQ
+	asyncevent,sendAQ						
+endon
+
+on rules#timer=4 do					//Jump to sendNM
+	asyncevent,sendNM
+endon
+
+on start4 do						//Start sleepMode measurements
+	longpulse,15,1,%v3%						//enable 5V bus
+	longpulse,12,0,%v3%						//start PM measurement for v3 seconds 
+	timerset,42,%v5%						//run sensor reads at v5 seconds
+	timerset,43,%v6%						//publish results as v6 seconds
+endon
+
+on rules#timer=42 do					//Run sensor reads
+	asyncevent,runSense
+endon
+
+on rules#timer=43 do					//Jump to sendAQ
+	asyncevent,sendAQ						//Publish to MQTT and go to sleep if v1=1
+endon
+
+on start5 do						//Start sleepModeSave measurements
+	timerset,52,%v5%						//run sensor reads at v5 seconds
+	timerset,53,%v6%						//publish results as v6 seconds
+endon
+
+on rules#timer=52 do					//Run sensor reads
+	asyncevent,runSenseSave
+endon
+
+on rules#timer=53 do					//Jump to sendAQ
+	asyncevent,sendAQSave						//Publish to MQTT and go to sleep
+endon
+
+on runSense do
+	taskrun,ADC
+	taskrun,PMS
+	taskrun,BME
+endon
+
+on runCount do
+	taskrun,Counter
+endon
+
+on runSenseSave do
+	taskrun,ADC
+	taskrun,BME
+endon
+
+on sendAQ do						//Publish normal data to MQTT server
+	publish Sensors/%mac_int%/telemetry, '{"id": "%mac_int%","Uptime":"%uptime%", "RSSI":"%rssi%", "VCC":"%v52%"}'
+	publish Sensors/%mac_int%/sensordata, '{"id": "%mac_int%","PMS1":"[PMS#PMS1]","PMS25":"[PMS#PMS25]", "PMS10":"[PMS#PMS10]", "Temp":"[BME#Temp]","Hum":"[BME#Hum]", "Press":"[BME#Press]"}'
+	timerset,1,1							//Exit
+endon
+
+on Counter#All do					//Publish Count to MQTT server
+	publish Sensors/%mac_int%/sensordata, '{"id": "%mac_int%","Count":"[Counter#Count]"}'
+endon
+
+on sendAQSave do					//Publish powerSave data to MQTT server
+	publish Sensors/%mac_int%/telemetry, '{"id": "%mac_int%","Uptime":"%uptime%", "RSSI":"%rssi%", "VCC":"%v52%"}'
+	publish Sensors/%mac_int%/sensordata, '{"id": "%mac_int%","Temp":"[BME#Temp]","Hum":"[BME#Hum]", "Press":"[BME#Press]"}'
+	timerset,1,1							//Exit
+endon
+
+on sendNM do						//Publish NarodMon data
+	SendToHTTP narodmon.ru,80,/get?ID=%sysname%&T=[BME#Temp]&H=[BME#Hum]&P=[BME#Press]&D1=[PMS#PMS1]&D2=[PMS#PMS25]&D3=[PMS#PMS10]
+endon
+
+
+on rules#timer=1 do					//Finish/restart cycle
+	if [Dummy#mode]=4 or [Dummy#mode]=5
+		publish Sysctl/%mac_int%/Status,"Done, gone sleeping for %v2% seconds"
+		deepsleep,%v2%
+
+	elseif [Dummy#mode]=0
+		publish Sysctl/%mac_int%/Status,"Keep maintenance"
+	else
+		asyncevent,start123
+	endif
+endon
+
+on click do						//Reboot
+	reboot
+endon

@@ -1,0 +1,54 @@
+// rules2.txt ver. 1.0.9 20220907
+//Allmode version
+
+On SendSysInfo Do
+  publish Sensors/%mac_int%/Start, '{"id": "%mac_int%", "bootCause": "%bootcause%", "channel": "%wi_ch%", "ip": "%ip%", "VCC": "%v52%", "build": "%sysbuild_git%", "prevMode": "[Dummy#mode]"}'
+Endon
+
+on postcheck do
+	publish Sensors/%mac_int%/Start, '{"id": "%mac_int%", "confFlag": "%unit%"}'
+endon
+
+on postconfig do
+	taskenable,%eventvalue1%
+	taskenable,%eventvalue2%
+	taskenable,%eventvalue3%
+	taskenable,%eventvalue4%
+  taskenable,%eventvalue5%
+	unit,1
+	save
+	asyncevent,MQTToff
+endon
+
+On cleartask Do
+  TaskClear,%eventvalue1%
+  TaskClear,%eventvalue2%
+  TaskClear,%eventvalue3%
+  TaskClear,%eventvalue4%
+  TaskClear,%eventvalue5%
+Endon
+
+on MQTToff do
+	ControllerDisable,1
+//	asyncevent,MQTTon
+	timerset,61,3
+endon
+
+on rules#timer=61 do
+//on MQTTon do
+	ControllerEnable,1
+endon
+
+on set2ndWiFi do
+        wifissid2,%eventvalue2%
+        wifikey2,%eventvalue3%
+endon
+
+on LEDOn do
+        if %eventvalue1% = 0
+            ledstop
+            taskdisable,LED
+        elseif %eventvalue1% = 1
+            taskenable,7
+        endif
+endon
