@@ -1,3 +1,5 @@
+Copyright (c) 2019 - 2025 AirMQ
+
 CERN Open Hardware Licence Version 2 - Permissive
 
 
